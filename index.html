@@ -248,7 +248,11 @@
     })();
 
     /* ── CONFIG ────────────────────────────── */
-    const WORKER_URL = 'https://dustorb-stats.astruznp19.workers.dev/';
+    // Direct RapidAPI call — no middleman needed
+    const RAPID_KEY = 'f799324f71mshaeee995f29881c8p192631jsna78f07c1adf0';
+    const EPIC_ID   = '4aed4968c1c24c4183a389a4fbe9ed1d';
+    const API_URL   = 'https://rocket-league1.p.rapidapi.com/ranks/' + EPIC_ID;
+    const DIV       = {1:'I', 2:'II', 3:'III', 4:'IV'};
 
     /* ── UI ────────────────────────────────── */
     function setUI(state, label) {
@@ -269,41 +273,66 @@
       document.getElementById('debug-box').classList.remove('show');
     }
 
-    function applyRanks(d) {
-      ['1','2','3'].forEach(n => {
-        const key = n === '1' ? 'v1' : n === '2' ? 'v2' : 'v3';
-        const p = d[key] ?? {};
-        document.getElementById(`r${n}-rank`).textContent = p.rank ?? '—';
-        document.getElementById(`r${n}-div`).textContent  = p.div  ?? '';
-        document.getElementById(`r${n}-mmr`).textContent  = p.mmr  ?? '—';
-      });
+    function applyRanks(list) {
+      function find(...terms) {
+        return list.find(p => terms.some(t => (p.playlist ?? '').toLowerCase().includes(t))) ?? null;
+      }
+      const v1 = find('duel');
+      const v2 = find('doubles');
+      const v3 = find('standard');
+
+      function paint(n, p) {
+        document.getElementById('r'+n+'-rank').textContent = p ? (p.rank ?? '—') : '—';
+        document.getElementById('r'+n+'-div').textContent  = p && p.division ? 'Div '+(DIV[p.division]??p.division) : '';
+        document.getElementById('r'+n+'-mmr').textContent  = p && p.mmr ? Math.round(p.mmr)+' MMR' : '—';
+      }
+      paint('1', v1); paint('2', v2); paint('3', v3);
     }
 
-    /* ── FETCH ─────────────────────────────── */
+    /* ── FETCH — direct browser call to RapidAPI ── */
     async function fetchRanks() {
       setUI('loading', 'updating…');
       try {
-        const r = await fetch(WORKER_URL, { signal: AbortSignal.timeout(12000) });
-        const json = await r.json();
+        const r = await fetch(API_URL, {
+          signal: AbortSignal.timeout(12000),
+          headers: {
+            'x-rapidapi-key':  RAPID_KEY,
+            'x-rapidapi-host': 'rocket-league1.p.rapidapi.com',
+          },
+        });
 
-        if (json.error) {
-          showDebug('Worker error:\n' + JSON.stringify(json, null, 2));
-          setUI('err', 'error');
+        const text = await r.text();
+        if (!r.ok) {
+          showDebug('API error ' + r.status + ':\n' + text.slice(0, 400));
+          setUI('err', 'error ' + r.status);
           return;
         }
 
-        // Show raw response in debug on first load so we can verify format
-        if (json._raw) {
-          console.log('Raw API response:', JSON.stringify(json._raw, null, 2));
+        let data;
+        try { data = JSON.parse(text); }
+        catch(e) { showDebug('Bad JSON:\n' + text.slice(0, 400)); setUI('err','bad json'); return; }
+
+        const list = data?.ranks;
+        if (!Array.isArray(list)) {
+          showDebug('Unexpected shape:\n' + JSON.stringify(data, null, 2).slice(0, 500));
+          setUI('err', 'parse error');
+          return;
         }
 
-        applyRanks(json);
+        applyRanks(list);
         hideDebug();
         setUI('ok', 'live · ' + new Date().toLocaleTimeString());
 
       } catch (err) {
-        showDebug('Fetch error:\n' + err.message);
-        setUI('err', err.name === 'TimeoutError' ? 'timeout' : 'error');
+        const isCors = err.message.toLowerCase().includes('cors') ||
+                       err.message.toLowerCase().includes('fetch') ||
+                       err.name === 'TypeError';
+        if (isCors) {
+          showDebug('CORS blocked — RapidAPI does not allow browser calls.\nNeed to keep using the Worker.\nSend this to Claude.');
+        } else {
+          showDebug('Fetch error:\n' + err.name + ': ' + err.message);
+        }
+        setUI('err', 'error');
       }
     }
 
