@@ -199,7 +199,7 @@
             <span class="live-dot" id="live-dot"></span>
             <span id="live-text">—</span>
           </span>
-          <button class="refresh-btn" id="refresh-btn" onclick="fetchStats()">↻ refresh</button>
+          <button class="refresh-btn" id="refresh-btn" onclick="fetchStats(true)">↻ refresh</button>
         </span>
       </div>
       <div class="rank-row">
@@ -388,7 +388,49 @@
     }
 
     /* ── Fetch ──────────────────────────────── */
-    async function fetchStats() {
+    /* ── LOCAL CACHE ───────────────────────── */
+    // Page loads/reloads no longer cost an API call by themselves — only the
+    // first load after the cache expires (or a manual refresh) hits RapidAPI.
+    const CACHE_KEY     = 'dustorb_rl_cache_v1';
+    const CACHE_TTL_MS  = 2 * 60 * 60 * 1000; // 2 hours — change this one number to adjust cadence
+
+    function readCache() {
+      try {
+        const raw = localStorage.getItem(CACHE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed?.timestamp || !parsed?.data) return null;
+        return parsed;
+      } catch (e) { return null; }
+    }
+    function writeCache(data) {
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ data, timestamp: Date.now() })); }
+      catch (e) { /* storage unavailable/full — fail silently, just means no caching this run */ }
+    }
+    function isFresh(cached) {
+      return !!cached && (Date.now() - cached.timestamp < CACHE_TTL_MS);
+    }
+    function paintFromData(data) {
+      if (data.lifetime) paintLifetime(data.lifetime);
+      const rankList = data.ranked ?? data.playlists ?? data.ranks
+        ?? (Array.isArray(data) ? data : null);
+      if (rankList) {
+        paintRanks(rankList);
+      } else {
+        console.log('API response keys:', Object.keys(data));
+      }
+    }
+
+    async function fetchStats(force = false) {
+      const cached = readCache();
+
+      if (!force && isFresh(cached)) {
+        paintFromData(cached.data);
+        hideDebug();
+        setUI('ok', 'cached · ' + new Date(cached.timestamp).toLocaleTimeString());
+        return;
+      }
+
       setUI('loading', 'updating…');
       try {
         const r = await fetch(API_URL, {
@@ -402,35 +444,43 @@
 
         const text = await r.text();
         if (!r.ok) {
-          showDebug('API error ' + r.status + ':\n' + text.slice(0, 400));
-          setUI('err', 'error ' + r.status); return;
+          if (cached) {
+            paintFromData(cached.data);
+            showDebug('API error ' + r.status + ' — showing cached data from '
+              + new Date(cached.timestamp).toLocaleString() + '\n\n' + text.slice(0, 300));
+            setUI('err', 'cached (limit hit)');
+          } else {
+            showDebug('API error ' + r.status + ':\n' + text.slice(0, 400));
+            setUI('err', 'error ' + r.status);
+          }
+          return;
         }
 
         let data;
         try { data = JSON.parse(text); }
         catch(e) { showDebug('Bad JSON:\n' + text.slice(0, 400)); setUI('err','bad json'); return; }
 
-        if (data.lifetime) paintLifetime(data.lifetime);
-
-        const rankList = data.ranked ?? data.playlists ?? data.ranks
-          ?? (Array.isArray(data) ? data : null);
-        if (rankList) {
-          paintRanks(rankList);
-        } else {
-          console.log('API response keys:', Object.keys(data));
-        }
-
+        paintFromData(data);
+        writeCache(data);
         hideDebug();
         setUI('ok', 'live · ' + new Date().toLocaleTimeString());
 
       } catch (err) {
-        showDebug('Fetch error:\n' + err.name + ': ' + err.message);
-        setUI('err', err.name === 'TimeoutError' ? 'timeout' : 'error');
+        if (cached) {
+          paintFromData(cached.data);
+          showDebug('Fetch error — showing cached data from '
+            + new Date(cached.timestamp).toLocaleString() + '\n\n' + err.name + ': ' + err.message);
+          setUI('err', 'cached (offline)');
+        } else {
+          showDebug('Fetch error:\n' + err.name + ': ' + err.message);
+          setUI('err', err.name === 'TimeoutError' ? 'timeout' : 'error');
+        }
       }
     }
 
     fetchStats();
-    setInterval(fetchStats, 5 * 60 * 1000);
+    // Re-checks every 15 min, but actually calls the API only once the 2h cache expires
+    setInterval(() => fetchStats(false), 15 * 60 * 1000);
   </script>
 
 </body>
