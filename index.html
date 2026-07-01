@@ -401,8 +401,8 @@
        Note: this counter is per-browser storage, not global — a different
        browser, device, or incognito window keeps its own separate counter. */
     const DAILY_KEY        = 'dustorb_rl_daily_v1';
-    const MAX_DAILY_CALLS  = 4;               // hard ceiling, well under any realistic free-tier quota
-    const MIN_GAP_MS       = 10 * 60 * 1000;  // min spacing between any two real attempts — blocks refresh-spam
+    const MAX_DAILY_CALLS  = 4;             // hard ceiling, well under any realistic free-tier quota
+    const MIN_GAP_MS       = CACHE_TTL_MS;  // refresh button uses the SAME 6h cadence as the cache above
 
     function utcDateKey() {
       const d = new Date();
@@ -464,16 +464,23 @@
       const sinceLastAttempt = Date.now() - (daily.lastAttempt || 0);
 
       if (daily.count >= MAX_DAILY_CALLS || sinceLastAttempt < MIN_GAP_MS) {
+        const remainingMs = MIN_GAP_MS - sinceLastAttempt;
+        const totalMin = Math.max(Math.ceil(remainingMs / 60000), 1);
+        const h = Math.floor(totalMin / 60);
+        const m = totalMin % 60;
+        const waitLabel = h > 0 ? (h + 'h' + (m > 0 ? ' ' + m + 'm' : '')) : (m + 'm');
+        const why = daily.count >= MAX_DAILY_CALLS
+          ? 'daily cap reached'
+          : 'next check available in ' + waitLabel;
         if (cached) {
           paintFromData(cached.data);
           hideDebug();
-          const why = daily.count >= MAX_DAILY_CALLS ? 'daily cap reached' : 'one moment';
           setUI('ok', 'cached · ' + new Date(cached.timestamp).toLocaleTimeString() + ' (' + why + ')');
         } else {
           // Only realistic path here: brand-new browser (no cache yet) that
           // somehow already burned its cap today — effectively never happens
           // in practice, but fails safely instead of spamming the API.
-          setUI('err', daily.count >= MAX_DAILY_CALLS ? 'daily cap reached' : 'one moment');
+          setUI('err', why);
         }
         return;
       }
@@ -530,10 +537,11 @@
       }
     }
 
+    // Fetches once on load. If the 6h cache is still fresh, this paints
+    // instantly with no network call. No background timer — updates now
+    // happen only when the page is loaded/reloaded or ↻ refresh is clicked,
+    // both still protected by the daily cap and min-gap above.
     fetchStats();
-    // Re-checks every 15 min; actually touches the API only when the cache
-    // above has expired — and even then, only if the daily cap allows it.
-    setInterval(() => fetchStats(false), 15 * 60 * 1000);
   </script>
 
 </body>
